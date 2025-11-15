@@ -47,6 +47,8 @@
 #include "tf2_sensor_msgs/tf2_sensor_msgs.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "nav2_costmap_2d/observation.hpp"
+#include "nav2_costmap_2d/octomap/octomap.hpp"
+#include <pcl/filters/extract_indices.h>
 #include "nav2_util/lifecycle_node.hpp"
 
 
@@ -80,12 +82,15 @@ public:
     std::string topic_name,
     double observation_keep_time,
     double expected_update_rate,
-    double min_obstacle_height, double max_obstacle_height, double obstacle_max_range,
-    double obstacle_min_range,
-    double raytrace_max_range, double raytrace_min_range, tf2_ros::Buffer & tf2_buffer,
+    double min_obstacle_height, double max_obstacle_height,
+    double obstacle_max_range, double obstacle_min_range,
+    tf2_ros::Buffer & tf2_buffer,
     std::string global_frame,
-    std::string sensor_frame,
-    tf2::Duration tf_tolerance);
+    tf2::Duration tf_tolerance,
+    bool ray_tracing = false,
+    double resolution_ = 0.1,
+    std::string sensor_frame = "",
+    double raytrace_max_range = 0.0, double raytrace_min_range = 0.0);
 
   /**
    * @brief  Destructor... cleans up
@@ -152,6 +157,8 @@ private:
   std::recursive_mutex lock_;  ///< @brief A lock for accessing data in callbacks safely
   double obstacle_max_range_, obstacle_min_range_, raytrace_max_range_, raytrace_min_range_;
   tf2::Duration tf_tolerance_;
+  bool ray_tracing_;
+  OctoMap octomap_;
 };
 }  // namespace nav2_costmap_2d
 #endif  // NAV2_COSTMAP_2D__OBSERVATION_BUFFER_HPP_
