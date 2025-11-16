@@ -40,6 +40,10 @@
 #include <vector>
 #include <list>
 #include <string>
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <future>
 
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "rclcpp/time.hpp"
@@ -58,7 +62,7 @@ namespace nav2_costmap_2d
  * @class ObservationBuffer
  * @brief Takes in point clouds from sensors, transforms them to the desired frame, and stores them
  */
-class ObservationBuffer
+class ObservationBuffer // TODO: add here inheritance classes ObservationBuffer and NegativeObservationBuffer and base class 
 {
 public:
   /**

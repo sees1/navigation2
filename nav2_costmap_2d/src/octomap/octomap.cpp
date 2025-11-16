@@ -419,6 +419,17 @@ namespace nav2_costmap_2d
     assemble(view_point);
   }
 
+  void OctoMap::update(const geometry_msgs::msg::TransformStamped& view_point,
+                       const pcl::PointCloud<pcl::PointXYZ>& ground,
+                       const pcl::PointCloud<pcl::PointXYZ>& obstacles,
+                       const pcl::PointCloud<pcl::PointXYZ>& empty)
+  {
+    ground_ = ground;
+    obstacles_ = obstacles;
+    empty_ = empty;
+    assemble(view_point);
+  }
+
   void OctoMap::assemble(const geometry_msgs::msg::TransformStamped& view_point)
   {
     float range_max_sqrd = range_max_ * range_max_;

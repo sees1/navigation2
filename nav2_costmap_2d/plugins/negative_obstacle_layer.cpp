@@ -76,18 +76,21 @@ void NegativeObstacleLayer::onInitialize()
   // The topics that we'll subscribe to from the parameter server
   std::string topics_string;
 
+  
   declareParameter("enabled", rclcpp::ParameterValue(true));
   declareParameter("footprint_clearing_enabled", rclcpp::ParameterValue(true));
   // declareParameter("min_obstacle_height", rclcpp::ParameterValue(0.0));
   // declareParameter("max_obstacle_height", rclcpp::ParameterValue(2.0));
   declareParameter("combination_method", rclcpp::ParameterValue(1));
   declareParameter("observation_sources", rclcpp::ParameterValue(std::string("")));
-
+  
   auto node = node_.lock();
   if (!node) {
     throw std::runtime_error{"Failed to lock node"};
   }
-
+  
+  empty_cloud_pub_ = node->create_publisher<sensor_msgs::msg::PointCloud2>("empty_neg_layer", rclcpp::QoS(1).reliability((rmw_qos_reliability_policy_t)0));
+  
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "footprint_clearing_enabled", footprint_clearing_enabled_);
   node->get_parameter(name_ + "." + "min_obstacle_height", min_obstacle_height_);
@@ -180,7 +183,7 @@ void NegativeObstacleLayer::onInitialize()
                                                                                             global_frame_,
                                                                                             tf2::durationFromSec(transform_tolerance),
                                                                                             true,
-                                                                                            resolution_)));
+                                                                                            0.2)));
 
     marking_buffers_.push_back(observation_buffers_.back());
 
@@ -319,6 +322,8 @@ void NegativeObstacleLayer::updateBounds(double robot_x,
     const Observation & obs = *it;
 
     const sensor_msgs::msg::PointCloud2 & cloud = *(obs.cloud_);
+
+    empty_cloud_pub_->publish(cloud);
 
     double sq_obstacle_max_range = obs.obstacle_max_range_ * obs.obstacle_max_range_;
     double sq_obstacle_min_range = obs.obstacle_min_range_ * obs.obstacle_min_range_;

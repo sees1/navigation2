@@ -192,6 +192,8 @@ protected:
   /// @brief Used to store observation buffers used for clearing obstacles
   std::vector<std::shared_ptr<nav2_costmap_2d::ObservationBuffer>> clearing_buffers_;
 
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr empty_cloud_pub_;
+
   /// @brief Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
 

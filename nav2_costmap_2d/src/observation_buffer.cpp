@@ -49,6 +49,7 @@ using namespace std::chrono_literals;
 
 namespace nav2_costmap_2d
 {
+
 ObservationBuffer::ObservationBuffer(
   const nav2_util::LifecycleNode::WeakPtr & parent,
   std::string topic_name,
@@ -74,7 +75,7 @@ ObservationBuffer::ObservationBuffer(
   raytrace_max_range_(raytrace_max_range), raytrace_min_range_(raytrace_min_range), 
   tf_tolerance_(tf_tolerance),
   ray_tracing_(ray_tracing),
-  octomap_(resolution_, obstacle_min_range_)
+  octomap_(resolution_, obstacle_max_range_)
 {
   auto node = parent.lock();
   clock_ = node->get_clock();
@@ -90,17 +91,68 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
 {
   geometry_msgs::msg::PointStamped global_origin;
 
-  // create a new observation on the list to be populated
   observation_list_.push_front(Observation());
 
   // check whether the origin frame has been set explicitly
   // or whether we should get it from the cloud
   std::string origin_frame = sensor_frame_ == "" ? cloud.header.frame_id : sensor_frame_;
 
+  // TODO: add dynamic get for this
+  std::string base_frame = "base_link";
+
   if (ray_tracing_)
   {
-    sensor_msgs::msg::PointCloud2 ros_ground_cloud;
-    sensor_msgs::msg::PointCloud2 ros_empty_cloud;
+    auto start = std::chrono::steady_clock::now(); 
+    // given these observations come from sensors...
+    // we'll need to store the origin pt of the sensor
+    geometry_msgs::msg::TransformStamped global_sensor_transform;
+    geometry_msgs::msg::TransformStamped global_base_transform;
+    try
+    {
+      global_sensor_transform = tf2_buffer_.lookupTransform(origin_frame, global_frame_, cloud.header.stamp, tf_tolerance_);
+    } 
+    catch (tf2::TransformException &ex)
+    {
+      RCLCPP_WARN(logger_, "tf lookup from %s to %s failed: %s", global_frame_.c_str(), origin_frame.c_str(), ex.what());
+    }
+
+    try
+    {
+      global_base_transform = tf2_buffer_.lookupTransform(base_frame, global_frame_, cloud.header.stamp, tf_tolerance_);
+    } 
+    catch (tf2::TransformException &ex)
+    {
+      RCLCPP_WARN(logger_, "tf lookup from %s to %s failed: %s", global_frame_.c_str(), base_frame.c_str(), ex.what());
+    }
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::fromROSMsg(cloud, *pcl_cloud);
+
+    Eigen::Affine3f t_ground_sensor;
+    t_ground_sensor.translation() = Eigen::Vector3f(global_sensor_transform.transform.translation.x,
+                                                    global_sensor_transform.transform.translation.y,
+                                                    global_sensor_transform.transform.translation.z);
+    
+    Eigen::Quaternionf q (global_base_transform.transform.rotation.w,
+                          global_base_transform.transform.rotation.x,
+                          global_base_transform.transform.rotation.y,
+                          global_base_transform.transform.rotation.z);
+
+    t_ground_sensor.linear() = q.toRotationMatrix();
+
+    Eigen::Vector4f min(obstacle_min_range_, -obstacle_max_range_, min_obstacle_height_, 1.0f);
+    Eigen::Vector4f max(obstacle_max_range_,  obstacle_max_range_, max_obstacle_height_, 1.0f);
+
+    // crop giant cloud to a small fov(actually not fov, but who gonna stop me?) cloud
+    pcl_cloud = cropBox<pcl::PointXYZ>(pcl_cloud, min, max, t_ground_sensor);
+
+    // std::promise<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_prom;
+    // std::future<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_fut = cloud_prom.get_future();
+
+    // std::thread cloud_thread(ObservationBuffer::bufferCloud, this, pcl_cloud, std::move(cloud_prom));
+    // cloud_thread.detach();
+    
+    // cloud_fut_set.push_back(cloud_fut);
 
     // stay at original cloud frame
     geometry_msgs::msg::TransformStamped vp;
@@ -114,7 +166,10 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     vp.transform.rotation.z = 0.0f;
     vp.transform.rotation.w = 1.0f;
 
-    octomap_.update(vp, ros_ground_cloud, cloud, ros_empty_cloud);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_ground_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_empty_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+    octomap_.update(vp, *pcl_ground_cloud, *pcl_cloud, *pcl_empty_cloud);
 
     pcl::IndicesPtr groundIndices(new std::vector<int>);
     pcl::IndicesPtr obstaclesIndices(new std::vector<int>);
@@ -130,6 +185,11 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
     extract.filter(*empty_cloud);
 
     pcl::toROSMsg(*empty_cloud, *(observation_list_.front().cloud_));
+    sensor_msgs::msg::PointCloud2 & observation_cloud = *(observation_list_.front().cloud_);
+    observation_cloud.header.frame_id = origin_frame;
+
+    int duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    RCLCPP_WARN(logger_, "Raytracing duration: %d ms", duration);
   }
   else
   {
@@ -205,18 +265,19 @@ void ObservationBuffer::purgeStaleObservations()
   if (!observation_list_.empty()) {
     std::list<Observation>::iterator obs_it = observation_list_.begin();
     // if we're keeping observations for no time... then we'll only keep one observation
-    if (observation_keep_time_ == rclcpp::Duration(0.0s)) {
+    if (observation_keep_time_ == rclcpp::Duration(0.0s))
+    {
       observation_list_.erase(++obs_it, observation_list_.end());
       return;
     }
 
     // otherwise... we'll have to loop through the observations to see which ones are stale
-    for (obs_it = observation_list_.begin(); obs_it != observation_list_.end(); ++obs_it) {
+    for (obs_it = observation_list_.begin(); obs_it != observation_list_.end(); ++obs_it)
+    {
       Observation & obs = *obs_it;
       // check if the observation is out of date... and if it is,
       // remove it and those that follow from the list
-      if ((clock_->now() - obs.cloud_->header.stamp) >
-        observation_keep_time_)
+      if ((clock_->now() - obs.cloud_->header.stamp) > observation_keep_time_)
       {
         observation_list_.erase(obs_it, observation_list_.end());
         return;

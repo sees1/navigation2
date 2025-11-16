@@ -155,6 +155,11 @@ public:
               const sensor_msgs::msg::PointCloud2& obstacles,
               const sensor_msgs::msg::PointCloud2& empty);
 
+  void update(const geometry_msgs::msg::TransformStamped& view_point,
+              const pcl::PointCloud<pcl::PointXYZ>& ground,
+              const pcl::PointCloud<pcl::PointXYZ>& obstacles,
+              const pcl::PointCloud<pcl::PointXYZ>& empty);
+
 	bool writeBinary(const std::string & path);
 
 	virtual void clear();
