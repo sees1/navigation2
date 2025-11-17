@@ -53,7 +53,8 @@ using nav2_costmap_2d::NO_INFORMATION;
 using nav2_costmap_2d::LETHAL_OBSTACLE;
 using nav2_costmap_2d::FREE_SPACE;
 
-using nav2_costmap_2d::ObservationBuffer;
+using nav2_costmap_2d::ObservationBufferBase;
+using nav2_costmap_2d::NegativeObservationBuffer;
 using nav2_costmap_2d::Observation;
 using rcl_interfaces::msg::ParameterType;
 
@@ -93,8 +94,6 @@ void NegativeObstacleLayer::onInitialize()
   
   node->get_parameter(name_ + "." + "enabled", enabled_);
   node->get_parameter(name_ + "." + "footprint_clearing_enabled", footprint_clearing_enabled_);
-  node->get_parameter(name_ + "." + "min_obstacle_height", min_obstacle_height_);
-  node->get_parameter(name_ + "." + "max_obstacle_height", max_obstacle_height_);
   node->get_parameter(name_ + "." + "combination_method", combination_method_);
   node->get_parameter("track_unknown_space", track_unknown_space);
   node->get_parameter("transform_tolerance", transform_tolerance);
@@ -130,62 +129,38 @@ void NegativeObstacleLayer::onInitialize()
   while (ss >> source) {
 
     // get the parameters for the specific topic
+    std::string topic;
     double observation_keep_time;
     double expected_update_rate;
-    double min_obstacle_height;
-    double max_obstacle_height;
-    std::string topic;
-    // std::string data_type;
     bool inf_is_valid;
+    double obstacle_max_range;
+    double obstacle_min_range;
 
     declareParameter(source + "." + "topic", rclcpp::ParameterValue(source));
-    // declareParameter(source + "." + "sensor_frame", rclcpp::ParameterValue(std::string("")));
     declareParameter(source + "." + "observation_persistence", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "expected_update_rate", rclcpp::ParameterValue(0.0));
-    // declareParameter(source + "." + "data_type", rclcpp::ParameterValue(std::string("LaserScan")));
-    declareParameter(source + "." + "min_obstacle_height", rclcpp::ParameterValue(0.0));
-    declareParameter(source + "." + "max_obstacle_height", rclcpp::ParameterValue(0.0));
     declareParameter(source + "." + "inf_is_valid", rclcpp::ParameterValue(false));
-    // declareParameter(source + "." + "marking", rclcpp::ParameterValue(true));
-    // declareParameter(source + "." + "clearing", rclcpp::ParameterValue(false));
     declareParameter(source + "." + "obstacle_max_range", rclcpp::ParameterValue(2.5));
     declareParameter(source + "." + "obstacle_min_range", rclcpp::ParameterValue(0.0));
-    // declareParameter(source + "." + "raytrace_max_range", rclcpp::ParameterValue(3.0));
-    // declareParameter(source + "." + "raytrace_min_range", rclcpp::ParameterValue(0.0));
 
     node->get_parameter(name_ + "." + source + "." + "topic", topic);
-    // node->get_parameter(name_ + "." + source + "." + "sensor_frame", sensor_frame);
     node->get_parameter(name_ + "." + source + "." + "observation_persistence", observation_keep_time);
     node->get_parameter(name_ + "." + source + "." + "expected_update_rate",expected_update_rate);
-    // node->get_parameter(name_ + "." + source + "." + "data_type", data_type);
-    node->get_parameter(name_ + "." + source + "." + "min_obstacle_height", min_obstacle_height);
-    node->get_parameter(name_ + "." + source + "." + "max_obstacle_height", max_obstacle_height);
     node->get_parameter(name_ + "." + source + "." + "inf_is_valid", inf_is_valid);
-    // node->get_parameter(name_ + "." + source + "." + "marking", marking);
-    // node->get_parameter(name_ + "." + source + "." + "clearing", clearing);
-
-
-    // get the obstacle range for the sensor
-    double obstacle_max_range, obstacle_min_range;
     node->get_parameter(name_ + "." + source + "." + "obstacle_max_range", obstacle_max_range);
     node->get_parameter(name_ + "." + source + "." + "obstacle_min_range", obstacle_min_range);
 
-    // create an observation buffer
-    observation_buffers_.push_back(std::shared_ptr<ObservationBuffer>(new ObservationBuffer(node,
-                                                                                            topic,
-                                                                                            observation_keep_time,
-                                                                                            expected_update_rate,
-                                                                                            min_obstacle_height,
-                                                                                            max_obstacle_height,
-                                                                                            obstacle_max_range,
-                                                                                            obstacle_min_range,
-                                                                                            *tf_,
-                                                                                            global_frame_,
-                                                                                            tf2::durationFromSec(transform_tolerance),
-                                                                                            true,
-                                                                                            0.2)));
+    // create an marking buffer
+    marking_buffers_.push_back(std::shared_ptr<ObservationBufferBase>(new NegativeObservationBuffer(node,
+                                                                                                    topic,
+                                                                                                    expected_update_rate,
+                                                                                                    obstacle_max_range,
+                                                                                                    obstacle_min_range,
+                                                                                                    *tf_,
+                                                                                                    global_frame_,
+                                                                                                    tf2::durationFromSec(transform_tolerance),
+                                                                                                    0.2)));
 
-    marking_buffers_.push_back(observation_buffers_.back());
 
     RCLCPP_DEBUG(logger_,
                  "Created an observation buffer for source %s, topic %s, global frame: %s, "
@@ -242,7 +217,7 @@ void NegativeObstacleLayer::onInitialize()
                                                                                           node->get_node_clock_interface(),
                                                                                           tf2::durationFromSec(transform_tolerance));
 
-    filter->registerCallback(std::bind(&NegativeObstacleLayer::pointCloud2Callback, this, std::placeholders::_1, observation_buffers_.back()));
+    filter->registerCallback(std::bind(&NegativeObstacleLayer::pointCloud2Callback, this, std::placeholders::_1, marking_buffers_.back()));
 
     observation_subscribers_.push_back(sub);
     observation_notifiers_.push_back(filter);
@@ -285,7 +260,7 @@ NegativeObstacleLayer::dynamicParametersCallback(std::vector<rclcpp::Parameter> 
 
 void NegativeObstacleLayer::pointCloud2Callback(
   sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
-  const std::shared_ptr<ObservationBuffer> & buffer)
+  const std::shared_ptr<ObservationBufferBase> & buffer)
 {
   // buffer the point cloud
   buffer->lock();
@@ -336,16 +311,17 @@ void NegativeObstacleLayer::updateBounds(double robot_x,
       double px = *iter_x, py = *iter_y, pz = *iter_z;
 
       // if the obstacle is too low, we won't add it
-      if (pz < min_obstacle_height_) {
-        RCLCPP_DEBUG(logger_, "The point is too low");
-        continue;
-      }
+      // TODO: make logic or clear
+      // if (pz < min_obstacle_height_) {
+        // RCLCPP_DEBUG(logger_, "The point is too low");
+        // continue;
+      // }
 
       // if the obstacle is too high or too far away from the robot we won't add it
-      if (pz > max_obstacle_height_) {
-        RCLCPP_DEBUG(logger_, "The point is too high");
-        continue;
-      }
+      // if (pz > max_obstacle_height_) {
+        // RCLCPP_DEBUG(logger_, "The point is too high");
+        // continue;
+      // }
 
       // compute the squared distance from the hitpoint to the pointcloud's origin
       double sq_dist =
@@ -500,9 +476,9 @@ void NegativeObstacleLayer::reset()
 
 void NegativeObstacleLayer::resetBuffersLastUpdated()
 {
-  for (unsigned int i = 0; i < observation_buffers_.size(); ++i)
-    if (observation_buffers_[i])
-      observation_buffers_[i]->resetLastUpdated();
+  for (unsigned int i = 0; i < marking_buffers_.size(); ++i)
+    if (marking_buffers_[i])
+      marking_buffers_[i]->resetLastUpdated();
 }
 
 }  // namespace nav2_costmap_2d

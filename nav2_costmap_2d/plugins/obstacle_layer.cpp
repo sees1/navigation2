@@ -53,7 +53,7 @@ using nav2_costmap_2d::NO_INFORMATION;
 using nav2_costmap_2d::LETHAL_OBSTACLE;
 using nav2_costmap_2d::FREE_SPACE;
 
-using nav2_costmap_2d::ObservationBuffer;
+using nav2_costmap_2d::ObservationBufferBase;
 using nav2_costmap_2d::Observation;
 using rcl_interfaces::msg::ParameterType;
 
@@ -191,7 +191,7 @@ void ObstacleLayer::onInitialize()
 
     // create an observation buffer
     observation_buffers_.push_back(
-      std::shared_ptr<ObservationBuffer
+      std::shared_ptr<ObservationBufferBase
       >(
         new ObservationBuffer(node,
                               topic,
@@ -201,14 +201,12 @@ void ObstacleLayer::onInitialize()
                               max_obstacle_height,
                               obstacle_max_range,
                               obstacle_min_range,
+                              raytrace_max_range,
+                              raytrace_min_range,
                               *tf_,
                               global_frame_,
                               tf2::durationFromSec(transform_tolerance),
-                              false,
-                              0.1,
-                              sensor_frame,
-                              raytrace_max_range,
-                              raytrace_min_range)));
+                              sensor_frame)));
 
     // check if we'll add this buffer to our marking observation buffers
     if (marking) {
@@ -332,7 +330,7 @@ ObstacleLayer::dynamicParametersCallback(
 void
 ObstacleLayer::laserScanCallback(
   sensor_msgs::msg::LaserScan::ConstSharedPtr message,
-  const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer)
+  const std::shared_ptr<nav2_costmap_2d::ObservationBufferBase> & buffer)
 {
   // project the laser into a point cloud
   sensor_msgs::msg::PointCloud2 cloud;
@@ -366,7 +364,7 @@ ObstacleLayer::laserScanCallback(
 void
 ObstacleLayer::laserScanValidInfCallback(
   sensor_msgs::msg::LaserScan::ConstSharedPtr raw_message,
-  const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer)
+  const std::shared_ptr<nav2_costmap_2d::ObservationBufferBase> & buffer)
 {
   // Filter positive infinities ("Inf"s) to max_range.
   float epsilon = 0.0001;  // a tenth of a millimeter
@@ -409,7 +407,7 @@ ObstacleLayer::laserScanValidInfCallback(
 void
 ObstacleLayer::pointCloud2Callback(
   sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
-  const std::shared_ptr<ObservationBuffer> & buffer)
+  const std::shared_ptr<ObservationBufferBase> & buffer)
 {
   // buffer the point cloud
   buffer->lock();

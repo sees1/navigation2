@@ -50,32 +50,22 @@ using namespace std::chrono_literals;
 namespace nav2_costmap_2d
 {
 
-ObservationBuffer::ObservationBuffer(
+ObservationBufferBase::ObservationBufferBase(
   const nav2_util::LifecycleNode::WeakPtr & parent,
   std::string topic_name,
-  double observation_keep_time,
   double expected_update_rate,
-  double min_obstacle_height, double max_obstacle_height,
-  double obstacle_max_range, double obstacle_min_range,
+  double obstacle_max_range,
+  double obstacle_min_range,
   tf2_ros::Buffer & tf2_buffer,
-  std::string global_frame,
   tf2::Duration tf_tolerance,
-  bool ray_tracing,
-  double resolution_,
-  std::string sensor_frame,
-  double raytrace_max_range, double raytrace_min_range)
-: tf2_buffer_(tf2_buffer),
-  observation_keep_time_(rclcpp::Duration::from_seconds(observation_keep_time)),
-  expected_update_rate_(rclcpp::Duration::from_seconds(expected_update_rate)),
-  global_frame_(global_frame),
-  sensor_frame_(sensor_frame),
-  topic_name_(topic_name),
-  min_obstacle_height_(min_obstacle_height), max_obstacle_height_(max_obstacle_height),
-  obstacle_max_range_(obstacle_max_range), obstacle_min_range_(obstacle_min_range),
-  raytrace_max_range_(raytrace_max_range), raytrace_min_range_(raytrace_min_range), 
+  std::string global_frame)
+: expected_update_rate_(rclcpp::Duration::from_seconds(expected_update_rate)),
+  tf2_buffer_(tf2_buffer),
   tf_tolerance_(tf_tolerance),
-  ray_tracing_(ray_tracing),
-  octomap_(resolution_, obstacle_max_range_)
+  global_frame_(global_frame),
+  topic_name_(topic_name),
+  obstacle_max_range_(obstacle_max_range),
+  obstacle_min_range_(obstacle_min_range)
 {
   auto node = parent.lock();
   clock_ = node->get_clock();
@@ -83,9 +73,56 @@ ObservationBuffer::ObservationBuffer(
   last_updated_ = node->now();
 }
 
-ObservationBuffer::~ObservationBuffer()
-{
-}
+ObservationBuffer::ObservationBuffer(
+  const nav2_util::LifecycleNode::WeakPtr & parent,
+  std::string topic_name,
+  double observation_keep_time,
+  double expected_update_rate,
+  double min_obstacle_height, double max_obstacle_height,
+  double obstacle_max_range, double obstacle_min_range,
+  double raytrace_max_range, double raytrace_min_range,
+  tf2_ros::Buffer & tf2_buffer,
+  std::string global_frame,
+  tf2::Duration tf_tolerance,
+  std::string sensor_frame)
+: ObservationBufferBase(parent,
+                        topic_name,
+                        expected_update_rate,
+                        obstacle_max_range,
+                        obstacle_min_range,
+                        tf2_buffer,
+                        tf_tolerance,
+                        global_frame),
+  observation_keep_time_(rclcpp::Duration::from_seconds(observation_keep_time)),
+  sensor_frame_(sensor_frame),
+  min_obstacle_height_(min_obstacle_height),
+  max_obstacle_height_(max_obstacle_height),
+  raytrace_max_range_(raytrace_max_range),
+  raytrace_min_range_(raytrace_min_range)
+{ }
+
+
+NegativeObservationBuffer::NegativeObservationBuffer(
+  const nav2_util::LifecycleNode::WeakPtr & parent,
+  std::string topic_name,
+  double expected_update_rate,
+  double obstacle_max_range,
+  double obstacle_min_range,
+  tf2_ros::Buffer & tf2_buffer,
+  std::string global_frame,
+  tf2::Duration tf_tolerance,
+  double resolution)
+: ObservationBufferBase(parent,
+                        topic_name,
+                        expected_update_rate,
+                        obstacle_max_range,
+                        obstacle_min_range,
+                        tf2_buffer,
+                        tf_tolerance,
+                        global_frame),
+  resolution_(resolution),
+  octomap_(resolution_, obstacle_max_range)
+{ }
 
 void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
 {
@@ -100,145 +137,160 @@ void ObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
   // TODO: add dynamic get for this
   std::string base_frame = "base_link";
 
-  if (ray_tracing_)
-  {
-    auto start = std::chrono::steady_clock::now(); 
+  try {
     // given these observations come from sensors...
     // we'll need to store the origin pt of the sensor
-    geometry_msgs::msg::TransformStamped global_sensor_transform;
-    geometry_msgs::msg::TransformStamped global_base_transform;
-    try
-    {
-      global_sensor_transform = tf2_buffer_.lookupTransform(origin_frame, global_frame_, cloud.header.stamp, tf_tolerance_);
-    } 
-    catch (tf2::TransformException &ex)
-    {
-      RCLCPP_WARN(logger_, "tf lookup from %s to %s failed: %s", global_frame_.c_str(), origin_frame.c_str(), ex.what());
-    }
+    geometry_msgs::msg::PointStamped local_origin;
+    local_origin.header.stamp = cloud.header.stamp;
+    local_origin.header.frame_id = origin_frame;
+    local_origin.point.x = 0;
+    local_origin.point.y = 0;
+    local_origin.point.z = 0;
+    tf2_buffer_.transform(local_origin, global_origin, global_frame_, tf_tolerance_);
+    tf2::convert(global_origin.point, observation_list_.front().origin_);
 
-    try
-    {
-      global_base_transform = tf2_buffer_.lookupTransform(base_frame, global_frame_, cloud.header.stamp, tf_tolerance_);
-    } 
-    catch (tf2::TransformException &ex)
-    {
-      RCLCPP_WARN(logger_, "tf lookup from %s to %s failed: %s", global_frame_.c_str(), base_frame.c_str(), ex.what());
-    }
+    // make sure to pass on the raytrace/obstacle range
+    // of the observation buffer to the observations
+    observation_list_.front().raytrace_max_range_ = raytrace_max_range_;
+    observation_list_.front().raytrace_min_range_ = raytrace_min_range_;
+    observation_list_.front().obstacle_max_range_ = obstacle_max_range_;
+    observation_list_.front().obstacle_min_range_ = obstacle_min_range_;
 
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::fromROSMsg(cloud, *pcl_cloud);
+    sensor_msgs::msg::PointCloud2 global_frame_cloud;
 
-    Eigen::Affine3f t_ground_sensor;
-    t_ground_sensor.translation() = Eigen::Vector3f(global_sensor_transform.transform.translation.x,
-                                                    global_sensor_transform.transform.translation.y,
-                                                    global_sensor_transform.transform.translation.z);
-    
-    Eigen::Quaternionf q (global_base_transform.transform.rotation.w,
-                          global_base_transform.transform.rotation.x,
-                          global_base_transform.transform.rotation.y,
-                          global_base_transform.transform.rotation.z);
+    // transform the point cloud
+    tf2_buffer_.transform(cloud, global_frame_cloud, global_frame_, tf_tolerance_);
+    global_frame_cloud.header.stamp = cloud.header.stamp;
 
-    t_ground_sensor.linear() = q.toRotationMatrix();
+    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_global_frame_cloud;
+    pcl::fromROSMsg(global_frame_cloud, *pcl_global_frame_cloud);
 
-    Eigen::Vector4f min(obstacle_min_range_, -obstacle_max_range_, min_obstacle_height_, 1.0f);
-    Eigen::Vector4f max(obstacle_max_range_,  obstacle_max_range_, max_obstacle_height_, 1.0f);
+    pcl_global_frame_cloud = passThrough<pcl::PointXYZ>(pcl_global_frame_cloud, "z", min_obstacle_height_, max_obstacle_height_);
+    pcl::toROSMsg(*pcl_global_frame_cloud, *(observation_list_.front().cloud_));
 
-    // crop giant cloud to a small fov(actually not fov, but who gonna stop me?) cloud
-    pcl_cloud = cropBox<pcl::PointXYZ>(pcl_cloud, min, max, t_ground_sensor);
-
-    // std::promise<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_prom;
-    // std::future<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_fut = cloud_prom.get_future();
-
-    // std::thread cloud_thread(ObservationBuffer::bufferCloud, this, pcl_cloud, std::move(cloud_prom));
-    // cloud_thread.detach();
-    
-    // cloud_fut_set.push_back(cloud_fut);
-
-    // stay at original cloud frame
-    geometry_msgs::msg::TransformStamped vp;
-    vp.header.frame_id = origin_frame;
-    vp.child_frame_id = origin_frame;
-    vp.transform.translation.x = 0.0f;
-    vp.transform.translation.y = 0.0f;
-    vp.transform.translation.z = 0.0f;
-    vp.transform.rotation.x = 0.0f;
-    vp.transform.rotation.y = 0.0f;
-    vp.transform.rotation.z = 0.0f;
-    vp.transform.rotation.w = 1.0f;
-
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_ground_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_empty_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-
-    octomap_.update(vp, *pcl_ground_cloud, *pcl_cloud, *pcl_empty_cloud);
-
-    pcl::IndicesPtr groundIndices(new std::vector<int>);
-    pcl::IndicesPtr obstaclesIndices(new std::vector<int>);
-    pcl::IndicesPtr emptyIndices(new std::vector<int>);
-
-    pcl::PointCloud<pcl::PointXYZ>::Ptr cloudWithRayTracing = octomap_.createCloud(0, obstaclesIndices.get(), emptyIndices.get(), groundIndices.get());
-
-    pcl::ExtractIndices<pcl::PointXYZ> extract;
-    extract.setInputCloud(cloudWithRayTracing);
-    extract.setIndices(emptyIndices);
-    extract.setNegative(false); // false = оставить только выбранные
-    pcl::PointCloud<pcl::PointXYZ>::Ptr empty_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    extract.filter(*empty_cloud);
-
-    pcl::toROSMsg(*empty_cloud, *(observation_list_.front().cloud_));
+    // now we need to remove observations from the cloud that are below
+    // or above our height thresholds
     sensor_msgs::msg::PointCloud2 & observation_cloud = *(observation_list_.front().cloud_);
-    observation_cloud.header.frame_id = origin_frame;
-
-    int duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
-    RCLCPP_WARN(logger_, "Raytracing duration: %d ms", duration);
+    observation_cloud.header.frame_id = global_frame_cloud.header.frame_id;
+  } catch (tf2::TransformException & ex) {
+    // if an exception occurs, we need to remove the empty observation from the list
+    observation_list_.pop_front();
+    RCLCPP_ERROR(
+      logger_,
+      "TF Exception that should never happen for sensor frame: %s, cloud frame: %s, %s",
+      sensor_frame_.c_str(),
+      cloud.header.frame_id.c_str(), ex.what());
+    return;
   }
-  else
+
+  // if the update was successful, we want to update the last updated time
+  last_updated_ = clock_->now();
+
+  // we'll also remove any stale observations from the list
+  purgeStaleObservations();
+}
+
+void NegativeObservationBuffer::bufferCloud(const sensor_msgs::msg::PointCloud2 & cloud)
+{
+  geometry_msgs::msg::PointStamped global_origin;
+
+  // check whether the origin frame has been set explicitly
+  // or whether we should get it from the cloud
+  std::string origin_frame = cloud.header.frame_id;
+
+  // TODO: add dynamic get for this
+  std::string base_frame = "base_link";
+
+  auto start = std::chrono::steady_clock::now(); 
+  // given these observations come from sensors...
+  // we'll need to store the origin pt of the sensor
+  geometry_msgs::msg::TransformStamped global_sensor_transform;
+  geometry_msgs::msg::TransformStamped global_base_transform;
+
+  try
   {
-    try {
-      // given these observations come from sensors...
-      // we'll need to store the origin pt of the sensor
-      geometry_msgs::msg::PointStamped local_origin;
-      local_origin.header.stamp = cloud.header.stamp;
-      local_origin.header.frame_id = origin_frame;
-      local_origin.point.x = 0;
-      local_origin.point.y = 0;
-      local_origin.point.z = 0;
-      tf2_buffer_.transform(local_origin, global_origin, global_frame_, tf_tolerance_);
-      tf2::convert(global_origin.point, observation_list_.front().origin_);
-
-      // make sure to pass on the raytrace/obstacle range
-      // of the observation buffer to the observations
-      observation_list_.front().raytrace_max_range_ = raytrace_max_range_;
-      observation_list_.front().raytrace_min_range_ = raytrace_min_range_;
-      observation_list_.front().obstacle_max_range_ = obstacle_max_range_;
-      observation_list_.front().obstacle_min_range_ = obstacle_min_range_;
-
-      sensor_msgs::msg::PointCloud2 global_frame_cloud;
-
-      // transform the point cloud
-      tf2_buffer_.transform(cloud, global_frame_cloud, global_frame_, tf_tolerance_);
-      global_frame_cloud.header.stamp = cloud.header.stamp;
-
-      pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_global_frame_cloud;
-      pcl::fromROSMsg(global_frame_cloud, *pcl_global_frame_cloud);
-
-      pcl_global_frame_cloud = passThrough<pcl::PointXYZ>(pcl_global_frame_cloud, "z", min_obstacle_height_, max_obstacle_height_);
-      pcl::toROSMsg(*pcl_global_frame_cloud, *(observation_list_.front().cloud_));
-
-      // now we need to remove observations from the cloud that are below
-      // or above our height thresholds
-      sensor_msgs::msg::PointCloud2 & observation_cloud = *(observation_list_.front().cloud_);
-      observation_cloud.header.frame_id = global_frame_cloud.header.frame_id;
-    } catch (tf2::TransformException & ex) {
-      // if an exception occurs, we need to remove the empty observation from the list
-      observation_list_.pop_front();
-      RCLCPP_ERROR(
-        logger_,
-        "TF Exception that should never happen for sensor frame: %s, cloud frame: %s, %s",
-        sensor_frame_.c_str(),
-        cloud.header.frame_id.c_str(), ex.what());
-      return;
-    }
+    global_sensor_transform = tf2_buffer_.lookupTransform(origin_frame, global_frame_, cloud.header.stamp, tf_tolerance_);
   } 
+  catch (tf2::TransformException &ex)
+  {
+    RCLCPP_WARN(logger_, "tf lookup from %s to %s failed: %s", global_frame_.c_str(), origin_frame.c_str(), ex.what());
+  }
+
+  try
+  {
+    global_base_transform = tf2_buffer_.lookupTransform(base_frame, global_frame_, cloud.header.stamp, tf_tolerance_);
+  } 
+  catch (tf2::TransformException &ex)
+  {
+    RCLCPP_WARN(logger_, "tf lookup from %s to %s failed: %s", global_frame_.c_str(), base_frame.c_str(), ex.what());
+  }
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::fromROSMsg(cloud, *pcl_cloud);
+
+  Eigen::Affine3f t_ground_sensor;
+  t_ground_sensor.translation() = Eigen::Vector3f(global_sensor_transform.transform.translation.x,
+                                                  global_sensor_transform.transform.translation.y,
+                                                  global_sensor_transform.transform.translation.z);
+  
+  Eigen::Quaternionf q (global_base_transform.transform.rotation.w,
+                        global_base_transform.transform.rotation.x,
+                        global_base_transform.transform.rotation.y,
+                        global_base_transform.transform.rotation.z);
+
+  t_ground_sensor.linear() = q.toRotationMatrix();
+
+  Eigen::Vector4f min(obstacle_min_range_, -obstacle_max_range_, 0, 1.0f);
+  Eigen::Vector4f max(obstacle_max_range_,  obstacle_max_range_, -1, 1.0f);
+
+  // crop giant cloud to a small fov(actually not fov, but who gonna stop me?) cloud
+  pcl_cloud = cropBox<pcl::PointXYZ>(pcl_cloud, min, max, t_ground_sensor);
+
+  // std::promise<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_prom;
+  // std::future<pcl::PointCloud<pcl::PointXYZ>::Ptr> cloud_fut = cloud_prom.get_future();
+
+  // std::thread cloud_thread(ObservationBuffer::bufferCloud, this, pcl_cloud, std::move(cloud_prom));
+  // cloud_thread.detach();
+  
+  // cloud_fut_set.push_back(cloud_fut);
+
+  // stay at original cloud frame
+  geometry_msgs::msg::TransformStamped vp;
+  vp.header.frame_id = origin_frame;
+  vp.child_frame_id = origin_frame;
+  vp.transform.translation.x = 0.0f;
+  vp.transform.translation.y = 0.0f;
+  vp.transform.translation.z = 0.0f;
+  vp.transform.rotation.x = 0.0f;
+  vp.transform.rotation.y = 0.0f;
+  vp.transform.rotation.z = 0.0f;
+  vp.transform.rotation.w = 1.0f;
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_ground_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_empty_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+  octomap_.update(vp, *pcl_ground_cloud, *pcl_cloud, *pcl_empty_cloud);
+
+  pcl::IndicesPtr groundIndices(new std::vector<int>);
+  pcl::IndicesPtr obstaclesIndices(new std::vector<int>);
+  pcl::IndicesPtr emptyIndices(new std::vector<int>);
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloudWithRayTracing = octomap_.createCloud(0, obstaclesIndices.get(), emptyIndices.get(), groundIndices.get());
+
+  pcl::ExtractIndices<pcl::PointXYZ> extract;
+  extract.setInputCloud(cloudWithRayTracing);
+  extract.setIndices(emptyIndices);
+  extract.setNegative(false); // false = оставить только выбранные
+  pcl::PointCloud<pcl::PointXYZ>::Ptr empty_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+  extract.filter(*empty_cloud);
+
+  sensor_msgs::msg::PointCloud2 res_cloud;
+
+  pcl::toROSMsg(*empty_cloud, res_cloud);
+  res_cloud.header.frame_id = origin_frame;
+
+  int duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+  RCLCPP_WARN(logger_, "Raytracing duration: %d ms", duration);
 
   // if the update was successful, we want to update the last updated time
   last_updated_ = clock_->now();
@@ -258,6 +310,13 @@ void ObservationBuffer::getObservations(std::vector<Observation> & observations)
   for (obs_it = observation_list_.begin(); obs_it != observation_list_.end(); ++obs_it) {
     observations.push_back(*obs_it);
   }
+}
+
+// returns a copy of the observations
+void NegativeObservationBuffer::getObservations(std::vector<Observation> & observations)
+{
+  observations.clear();
+  // TODO: add here wait for promise of work from thread's and form it in vector
 }
 
 void ObservationBuffer::purgeStaleObservations()
@@ -286,14 +345,20 @@ void ObservationBuffer::purgeStaleObservations()
   }
 }
 
-bool ObservationBuffer::isCurrent() const
+void NegativeObservationBuffer::purgeStaleObservations()
+{
+  // TODO: add here deleted thread's resuls 
+}
+
+// ObservationBufferBase specific method's
+
+bool ObservationBufferBase::isCurrent() const
 {
   if (expected_update_rate_ == rclcpp::Duration(0.0s)) {
     return true;
   }
 
-  bool current = (clock_->now() - last_updated_) <=
-    expected_update_rate_;
+  bool current = (clock_->now() - last_updated_) <= expected_update_rate_;
   // if (!current) {
   //   RCLCPP_WARN(
   //     logger_,
@@ -306,8 +371,9 @@ bool ObservationBuffer::isCurrent() const
   return current;
 }
 
-void ObservationBuffer::resetLastUpdated()
+void ObservationBufferBase::resetLastUpdated()
 {
   last_updated_ = clock_->now();
 }
+
 }  // namespace nav2_costmap_2d

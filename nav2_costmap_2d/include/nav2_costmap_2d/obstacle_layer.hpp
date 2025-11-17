@@ -150,7 +150,7 @@ public:
    */
   void laserScanCallback(
     sensor_msgs::msg::LaserScan::ConstSharedPtr message,
-    const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer);
+    const std::shared_ptr<nav2_costmap_2d::ObservationBufferBase> & buffer);
 
   /**
    * @brief A callback to handle buffering LaserScan messages which need filtering to turn Inf values into range_max.
@@ -159,7 +159,7 @@ public:
    */
   void laserScanValidInfCallback(
     sensor_msgs::msg::LaserScan::ConstSharedPtr message,
-    const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer);
+    const std::shared_ptr<nav2_costmap_2d::ObservationBufferBase> & buffer);
 
   /**
    * @brief  A callback to handle buffering PointCloud2 messages
@@ -168,7 +168,7 @@ public:
    */
   void pointCloud2Callback(
     sensor_msgs::msg::PointCloud2::ConstSharedPtr message,
-    const std::shared_ptr<nav2_costmap_2d::ObservationBuffer> & buffer);
+    const std::shared_ptr<nav2_costmap_2d::ObservationBufferBase> & buffer);
 
   // for testing purposes
   void addStaticObservation(nav2_costmap_2d::Observation & obs, bool marking, bool clearing);
@@ -237,11 +237,11 @@ protected:
   /// @brief Used to make sure that transforms are available for each sensor
   std::vector<std::shared_ptr<tf2_ros::MessageFilterBase>> observation_notifiers_;
   /// @brief Used to store observations from various sensors
-  std::vector<std::shared_ptr<nav2_costmap_2d::ObservationBuffer>> observation_buffers_;
+  std::vector<std::shared_ptr<nav2_costmap_2d::ObservationBufferBase>> observation_buffers_;
   /// @brief Used to store observation buffers used for marking obstacles
-  std::vector<std::shared_ptr<nav2_costmap_2d::ObservationBuffer>> marking_buffers_;
+  std::vector<std::shared_ptr<nav2_costmap_2d::ObservationBufferBase>> marking_buffers_;
   /// @brief Used to store observation buffers used for clearing obstacles
-  std::vector<std::shared_ptr<nav2_costmap_2d::ObservationBuffer>> clearing_buffers_;
+  std::vector<std::shared_ptr<nav2_costmap_2d::ObservationBufferBase>> clearing_buffers_;
 
   /// @brief Dynamic parameters handler
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr dyn_params_handler_;
